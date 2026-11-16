@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launch Radar: pre-token protocols ranked by implied value, with farm plans</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="#/"><span class="dot" aria-hidden="true"></span>Launch Radar</a>
+  <nav aria-label="Views">
+    <a href="#/" data-nav="board">Board</a>
+    <a href="#/plan" data-nav="plan">Your plan</a>
+    <a href="#/traded" data-nav="traded">Traded comparables</a>
+    <a href="#/method" data-nav="method">Method</a>
+  </nav>
+  <span class="asof" id="asof"></span>
+</header>
+<main id="app" tabindex="-1">
+  <section id="hero" class="hero"></section>
+  <section id="strip" class="strip" aria-label="Budget planner"></section>
+  <section id="view"></section>
+</main>
+<footer class="foot" id="foot"></footer>
+<script src="../data.js"></script>
+<script src="model.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
