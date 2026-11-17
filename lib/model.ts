@@ -44,15 +44,15 @@ export interface ModelRow {
 interface Score { median_miss: number; within_3x: number; spearman: number }
 export interface Radar {
   as_of: string; assumptions: Record<string, number>;
-  fit: { a: number; b: number; g: number; d: number; gm: number; am: number; n: number; cat: Record<string, { n: number; raw: number; effect: number }> };
+  fit: { spec: string; k: number; lam: number | null; a: number; b: number; g: number; d: number; gm: number; am: number; n: number; cat: Record<string, { n: number; raw: number; effect: number }> };
   oos: { model: Score; baseline: Score; q25: number; q75: number };
+  cmp: Record<'robust' | 'ols' | 'on' | 'off', Score & { spec: string; lam: number | null }>;
   rows: ModelRow[];
   comparables: { slug: string; name: string; category: string | null; tvl_usd: number; mcap_usd: number; fitted_usd: number; loo_usd: number; miss: number }[];
 }
 interface ModelApi {
   build(s: Snapshot): Radar;
   econ(r: ModelRow, deposit: number): Econ;
-  usd(v: number): string;
 }
 
 /** The shared model: the very file the dashboard loads. */
@@ -97,9 +97,12 @@ export function boardDocument(radar: Radar): { rows: BoardRow[]; traded: unknown
   return {
     model: {
       as_of: radar.as_of,
-      formula: 'log10(implied) = a + b*log10(TVL) + category effect + g*(growth - mean) + d*(years - mean)',
+      formula: `log10(implied) = a + b*log10(TVL) + category effect${radar.fit.lam === null ? '' : ' + g*(growth - mean) + d*(years - mean)'}`,
+      spec: radar.fit.spec === 'robust' ? 'Huber robust line, median category effect' : 'least-squares line, mean category effect',
+      category_shrink_k: radar.fit.k, ridge: radar.fit.lam,
       a: radar.fit.a, b: radar.fit.b, g: radar.fit.g, d: radar.fit.d, comparables: radar.fit.n,
       out_of_sample: radar.oos.model, flat_baseline: radar.oos.baseline, band_quantiles_log10: [radar.oos.q25, radar.oos.q75],
+      leave_one_out_by_spec: radar.cmp,
       assumptions: radar.assumptions,
     },
     rows: radar.rows.map((r) => boardRow(r, radar)),

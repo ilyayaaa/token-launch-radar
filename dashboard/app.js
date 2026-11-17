@@ -1,5 +1,5 @@
-/* Launch Radar page. It runs RadarModel.build() (model.js, the same code main.ts ran to write board.json)
-   on the snapshot in data.js, then draws the board, the detail views and the budget planner. */
+/* Launch Radar page: runs model.js's build() (as main.ts did for board.json) on data.js's snapshot,
+   then draws the board, the detail views and the budget planner. */
 (() => {
   'use strict';
   const M = window.RadarModel, A = M.A, R = M.build(window.SNAPSHOT), F = R.fit;
@@ -26,8 +26,11 @@
     for (const r of rows) r.held = held.get(r.slug) || 0;
   }
 
-  /* ---------- hero ---------- */
-  const o = R.oos, wl = rows.filter((r) => r.watchlist).length;
+  // hero
+  const o = R.oos, C = R.cmp, wl = rows.filter((r) => r.watchlist).length;
+  // The spec leave-one-out chose: robust or least squares, and whether growth and age are in the value.
+  const ROB = F.spec === 'robust', GA = F.lam !== null, cen = ROB ? 'median' : 'mean', nv = ': shown, not valued (see Method)';
+  const sc = (s) => `${s.median_miss.toFixed(2)}× median miss, ${(s.within_3x * 100).toFixed(0)}% within 3×, rank ${s.spearman.toFixed(2)}`;
   const check = window.BOARD_CHECK, total = rows.reduce((s, r) => s + r.implied_value_usd, 0);
   const agrees = check && check.rows === rows.length && check.top === rows[0].slug && check.total_usd === total;
 
@@ -61,9 +64,9 @@
         <div class="card"><b>${F.n}</b><span>traded comparables</span></div>
         <div class="card accent"><b>${o.model.median_miss.toFixed(2)}×</b><span>out-of-sample median miss</span></div>
       </div>
-      <div class="formula"><span class="lbl">Fitted value model (least squares on ${F.n} traded tokens)</span>
-        <code>log₁₀ value = ${F.a.toFixed(3)} + ${F.b.toFixed(3)}·log₁₀ TVL + category ${sgn(F.g, 4)}·(7d% ${sgn(-F.gm, 1)}) ${sgn(F.d, 4)}·(years ${sgn(-F.am, 2)})</code>
-        <span class="note">A pre-token row's value is what the curve says a token on that record trades at. Category effects shrink to 0 with k = ${A.shrink_k}; growth clamped ±${A.growth_clamp}%; growth and age slopes ridge-shrunk, λ = ${F.lam} chosen by leave-one-out. <a href="#/method">Method</a></span>
+      <div class="formula"><span class="lbl">Fitted value model (${ROB ? `Huber robust line, c = ${A.huber_c}` : 'least squares'}, on ${F.n} traded tokens)</span>
+        <code>log₁₀ value = ${F.a.toFixed(3)} + ${F.b.toFixed(3)}·log₁₀ TVL + category${GA ? ` ${sgn(F.g, 4)}·(7d% ${sgn(-F.gm, 1)}) ${sgn(F.d, 4)}·(years ${sgn(-F.am, 2)})` : ''}</code>
+        <span class="note">A pre-token row's value is what the curve says a token on that record trades at. Category effect: ${cen} residual × n/(n + ${F.k}). ${GA ? `Growth and age slopes ridge-shrunk, λ = ${F.lam}.` : '7-day change and days with no token are shown, not valued: leave-one-out was better without them.'} <a href="#/method">Method</a></span>
       </div>
       <div class="panel oos"><span class="lbl">Out of sample: leave-one-out over ${F.n} traded tokens</span>
         <div class="oosg"><div><span>Median miss</span><b class="win">${o.model.median_miss.toFixed(2)}×</b><small>flat multiple ${o.baseline.median_miss.toFixed(2)}×</small></div>
@@ -75,7 +78,7 @@
     <div class="hero-r panel"><span class="lbl">Size curve: log market cap vs log TVL</span>${scatter(460, 262)}${legend}</div>`;
   }
 
-  /* ---------- planner strip and panel ---------- */
+  // planner strip and panel
   function strip() {
     return `<div class="pl-in"><span class="lbl">Budget planner</span>
       <label>Capital <span class="inp">$<input id="cap" type="number" min="100" step="500" value="${st.capital}" inputmode="numeric"></span></label>
@@ -94,7 +97,7 @@
   function planPanel() {
     const p = plan;
     return `<div class="panel plan" id="planpanel"><h2>Your plan for ${money(st.capital)} and ${st.hours} h a week</h2>
-      <p class="muted">Greedy split in ${money(Math.max(50, st.capital / A.chunks))} chunks: each chunk goes where it adds the most net payout per dollar. Your share is deposit ÷ (TVL + deposit), so each extra dollar earns a little less; a protocol stops getting money when its marginal return falls below the next one's, at ${A.max_share * 100}% of capital, or when the hours run out. Opening a protocol pays its gas first.</p>
+      <p class="muted">Greedy split in ${money(Math.max(50, st.capital / A.chunks))} chunks, each to where it adds the most net payout per dollar. Your share is deposit ÷ (TVL + deposit), so each extra dollar earns less; a protocol stops when the next pays more, at ${A.max_share * 100}% of capital, or when the hours run out. Opening one pays its gas first.</p>
       <table class="t"><thead><tr><th>Protocol</th><th class="n">Deposit</th><th class="n">Your share</th><th class="n">Gas + fees</th><th class="n">h/week</th><th class="n">Expected net</th><th class="n">P25–P75</th><th class="n">Net / hour</th></tr></thead><tbody>
       ${p.picks.map((x) => `<tr><td><a href="#/p/${x.row.slug}">${esc(x.row.name)}</a> <small class="muted">${esc(x.row.category || '')} · ${esc(x.row.plan.chain)}</small></td><td class="n">${money(x.e.deposit)}</td><td class="n">${(x.e.share * 100).toFixed(4)}%</td><td class="n">${money(x.e.cost)}</td><td class="n">${x.e.hours_week.toFixed(2)}</td><td class="n pos">${money(x.e.net)}</td><td class="n">${money(x.e.low)} – ${money(x.e.high)}</td><td class="n">${money(x.e.net_hr)}</td></tr>`).join('')}
       </tbody><tfoot><tr><td>Total</td><td class="n">${money(st.capital - p.unallocated)}</td><td></td><td class="n">${money(p.gas)}</td><td class="n">${p.hours_week.toFixed(2)}</td><td class="n pos">${money(p.net)}</td><td class="n">${money(p.low)} – ${money(p.high)}</td><td></td></tr></tfoot></table>
@@ -102,7 +105,7 @@
       <p class="muted">Expected net = implied value × ${A.airdrop_share * 100}% airdrop share × your share − gas and fees, if a token launches. The range uses the value's P25–P75 band.</p></div>`;
   }
 
-  /* ---------- board ---------- */
+  // board
   const COLS = [
     ['rank', '#', (r) => r.rank], ['name', 'Protocol', (r) => r.name.toLowerCase()], ['value', 'Implied value · P25–P75', (r) => r.implied_value_usd],
     ['tvl', 'TVL', (r) => r.tvl_usd], ['chg', '7d', (r) => r.change_7d ?? -1e9], ['days', 'Days, no token', (r) => r.days_tracked ?? -1],
@@ -157,7 +160,7 @@
     $('#rows').onkeydown = (e) => { const tr = e.target.closest('tr'); if (e.key === 'Enter' && tr) location.hash = '#/p/' + tr.dataset.s; };
   }
 
-  /* ---------- detail ---------- */
+  // detail
   function detail(r) {
     const f = r.factors, c = r.category || 'Uncategorised', ce = F.cat[c];
     const peers = R.comparables.filter((p) => (p.category || 'Uncategorised') === c).sort((a, b) => Math.abs(Math.log10(a.tvl_usd / r.tvl_usd)) - Math.abs(Math.log10(b.tvl_usd / r.tvl_usd))).slice(0, 4);
@@ -169,9 +172,9 @@
     <div class="grid2"><div>
       <div class="panel"><h2>How the value is built</h2><table class="t math"><tbody>
         <tr><td>Size curve</td><td>10^(${F.a.toFixed(3)} + ${F.b.toFixed(3)} × ${Math.log10(r.tvl_usd).toFixed(3)}), where ${Math.log10(r.tvl_usd).toFixed(3)} = log₁₀ of TVL ${money(r.tvl_usd)}</td><td class="n"><b>${money(f.size_usd)}</b></td></tr>
-        <tr><td>Category</td><td>${esc(c)}: ${ce ? `mean residual ${sgn(ce.raw, 2)} over ${ce.n} traded, shrunk × ${ce.n}/(${ce.n} + ${A.shrink_k})` : 'no traded comparable, effect 0'}</td><td class="n">${x2(f.category)}</td></tr>
-        <tr><td>7-day growth</td><td>${pct(r.change_7d)} → clamped ${pct(f.growth_pct)} vs mean ${pct(F.gm)}, coefficient ${F.g.toFixed(4)}</td><td class="n">${x2(f.growth)}</td></tr>
-        <tr><td>Time, no token</td><td>${f.age_years.toFixed(2)} years${f.age_imputed ? ' (no listing date: median used)' : ''} vs mean ${F.am.toFixed(2)}, coefficient ${F.d.toFixed(4)}</td><td class="n">${x2(f.age)}</td></tr>
+        <tr><td>Category</td><td>${esc(c)}: ${ce ? `${cen} residual ${sgn(ce.raw, 2)} over ${ce.n} traded, shrunk × ${ce.n}/(${ce.n} + ${F.k})` : 'no traded comparable, effect 0'}</td><td class="n">${x2(f.category)}</td></tr>
+        <tr><td>7-day growth</td><td>${pct(r.change_7d)}${GA ? ` → clamped ${pct(f.growth_pct)} vs mean ${pct(F.gm)}, coefficient ${F.g.toFixed(4)}` : nv}</td><td class="n">${x2(f.growth)}</td></tr>
+        <tr><td>Time, no token</td><td>${r.days_tracked ?? 'unknown'} days${GA ? `, ${f.age_years.toFixed(2)} years${f.age_imputed ? ' (no listing date: median used)' : ''} vs mean ${F.am.toFixed(2)}, coefficient ${F.d.toFixed(4)}` : nv}</td><td class="n">${x2(f.age)}</td></tr>
         <tr class="sum"><td>Implied value</td><td>${money(f.size_usd)} ${x2(f.category)} ${x2(f.growth)} ${x2(f.age)}</td><td class="n"><b>${money(r.implied_value_usd)}</b></td></tr>
         <tr><td>Band</td><td>× 10^${o.q25.toFixed(2)} and × 10^${o.q75.toFixed(2)}: the 25th and 75th percentile leave-one-out misses</td><td class="n">${money(r.band_low)} – ${money(r.band_high)}</td></tr>
       </tbody></table>
@@ -201,32 +204,32 @@
       Change capital and hours in the board's planner. Verdict rule: Farm at ≥ $${A.farm_net_hr}/h and break-even odds ≤ ${A.farm_odds * 100}%; Marginal at ≥ $${A.marginal_net_hr}/h and ≤ ${A.marginal_odds * 100}%; else Skip.</p>`;
   }
 
-  /* ---------- traded and method ---------- */
+  // traded and method
   const TCOLS = [['name', 'Token', (c) => c.name.toLowerCase()], ['cat', 'Category', (c) => c.category || ''], ['tvl', 'TVL', (c) => c.tvl_usd], ['mcap', 'Market cap', (c) => c.mcap_usd], ['fit', 'Curve', (c) => c.fitted_usd], ['loo', 'Left-out prediction', (c) => c.loo_usd], ['miss', 'Miss', (c) => c.miss]];
   function traded() {
     const key = TCOLS.find((c) => c[0] === st.tsort)[2], list = [...R.comparables].sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0) * st.tdir);
     return `<div class="panel"><h2>Traded comparables <small class="muted">${R.comparables.length} tokens that trade: the market's own values, never ranked on the board</small></h2>
-    <p class="muted">These fit the curve. "Curve" is the full model's value for the token; "Left-out prediction" refits without it first, which is the honest test: median miss ${o.model.median_miss.toFixed(2)}×.</p>
+    <p class="muted">"Curve" is the full model's value; "Left-out prediction" refits without the token first, the honest test: median miss ${o.model.median_miss.toFixed(2)}×.</p>
     <div class="tw"><table class="t"><thead><tr>${TCOLS.map(([k, l]) => `<th data-t="${k}" class="${k === 'name' || k === 'cat' ? '' : 'n'}${k === st.tsort ? ' sorted' : ''}" data-dir="${k === st.tsort ? (st.tdir > 0 ? '↑' : '↓') : ''}">${l}</th>`).join('')}</tr></thead><tbody>
     ${list.map((c) => `<tr><td>${esc(c.name)}</td><td class="muted">${esc(c.category || '')}</td><td class="n">${money(c.tvl_usd)}</td><td class="n"><b>${money(c.mcap_usd)}</b></td><td class="n">${money(c.fitted_usd)}</td><td class="n">${money(c.loo_usd)}</td><td class="n ${c.miss <= 3 ? 'pos' : 'neg'}">${c.miss.toFixed(1)}×</td></tr>`).join('')}</tbody></table></div></div>`;
   }
   function method() {
-    const ex = window.SNAPSHOT.protocols.filter((p) => p.mcap_usd === null && p.gecko_id === null && p.symbol === null && M.excludedWhy(p) && !window.SNAPSHOT.watchlist.includes(p.slug)).length;
+    const ex = window.SNAPSHOT.protocols.filter((p) => M.noToken(p) && M.excludedWhy(p) && !window.SNAPSHOT.watchlist.includes(p.slug)).length;
     const gas = Object.entries(M.GAS).map(([k, v]) => `${k} ${money(v)}`).join(' · ') + ' · rollups and L2s $0.10 · any other chain $0.25';
     return `<div class="panel prose"><h2>Method</h2><ol>
-    <li><b>Universe.</b> Every protocol whose record carries no market cap, no CoinGecko id and no symbol, less ${ex} wrapped, staked, bridged or exchange products (categories ${esc(['CEX', 'Bridge', 'Canonical Bridge', 'Cross Chain Bridge', 'Liquid Staking', 'Liquid Restaking', 'Restaking', 'Restaked BTC', 'Anchor BTC', 'Stablecoin Wrapper'].join(', '))}; names with a version marker, an exchange prefix or the word wrapped, staked or staking), plus all ${R.watchlist_size} watchlist slugs: ${rows.length} rows. A record is not proof: they record no token.</li>
+    <li><b>Universe.</b> Every protocol whose record carries no market cap, no CoinGecko id and no symbol, less ${ex} wrapped, staked, bridged or exchange products (categories ${esc(M.EXCLUDED.join(', '))}; names with a version marker, an exchange prefix or the word wrapped, staked or staking), plus all ${R.watchlist_size} watchlist slugs: ${rows.length} rows. A record is not proof: they record no token.</li>
     <li><b>Comparables.</b> The ${F.n} protocols with a positive market cap. Their tokens trade, so they sit on their own tab and are never ranked.</li>
-    <li><b>Size curve.</b> Least squares of log₁₀ market cap on log₁₀ TVL: a = ${F.a.toFixed(3)}, b = ${F.b.toFixed(3)}. A b below 1 means value grows slower than TVL.</li>
-    <li><b>Category.</b> Each category's mean residual, shrunk toward 0 as sum ÷ (n + ${A.shrink_k}), so one traded token moves its category by a sixth of its own miss.</li>
-    <li><b>Growth and age.</b> Least squares of what is left on the 7-day TVL change (clamped ±${A.growth_clamp}%) and years tracked (capped at ${A.age_cap_years}; missing dates take the median, ${R.median_days} days): each slope's sum of squares scaled by (1 + λ), λ tried at ${A.ridge_grid.join(', ')} and kept where the leave-one-out miss is smallest (${R.ridge_tries.map(([l, m]) => `λ ${l}: ${m.toFixed(2)}×`).join(', ')}). Result: g = ${F.g.toFixed(4)} per point, d = ${F.d.toFixed(4)} per year. In this snapshot a week's TVL move and the years tracked say little about a traded token's price, so the data keeps both weights small; their signs are the data's, not chosen.</li>
-    <li><b>Out of sample.</b> Each traded token is left out, the whole model is refitted and the token predicted. Median miss ${o.model.median_miss.toFixed(2)}× against ${o.baseline.median_miss.toFixed(2)}× for one flat median market-cap-to-TVL multiple; ${(o.model.within_3x * 100).toFixed(0)}% within 3× against ${(o.baseline.within_3x * 100).toFixed(0)}%; rank correlation ${o.model.spearman.toFixed(2)} against ${o.baseline.spearman.toFixed(2)}, about level, because TVL alone already sets most of the order. The band is the 25th to 75th percentile of those misses.</li>
+    <li><b>Size curve.</b> ${ROB ? `Huber regression of log₁₀ market cap on log₁₀ TVL by iteratively reweighted least squares: weight 1 within ${A.huber_c} (log₁₀ units) of the line, ${A.huber_c} ÷ |residual| beyond, ${A.huber_iter} rounds, so tokens priced far off their TVL pull the line less` : 'Least squares of log₁₀ market cap on log₁₀ TVL'}: a = ${F.a.toFixed(3)}, b = ${F.b.toFixed(3)}. A b below 1 means value grows slower than TVL.</li>
+    <li><b>Category.</b> Each category's ${cen} residual from that line, shrunk toward 0 by n ÷ (n + ${F.k}), so a category with one traded token keeps 1/${F.k + 1} of its miss.</li>
+    <li><b>Growth and age.</b> Tested on what is left: the 7-day TVL change (clamped ±${A.growth_clamp}%) and years tracked (capped at ${A.age_cap_years}; missing dates take the median, ${R.median_days} days), each slope's sum of squares scaled by (1 + λ); leave-one-out by λ: ${R.ridge_tries.map(([l, m]) => `${l ?? 'off'} ${m.toFixed(2)}×`).join(', ')}. ${GA ? `Kept at λ = ${F.lam}: g = ${F.g.toFixed(4)} per point, d = ${F.d.toFixed(4)} per year.` : `With them, at best: ${sc(C.on)}; without: ${sc(C.off)}. The miss is smaller without them, so they are left out of the value and shown as context (7d, days with no token).`}</li>
+    <li><b>Out of sample.</b> Each traded token is left out, the whole model (the ${ROB ? 'robust' : 'least-squares'} line too) is refitted and the token predicted. Median miss ${o.model.median_miss.toFixed(2)}× against ${o.baseline.median_miss.toFixed(2)}× for one flat median market-cap-to-TVL multiple; ${(o.model.within_3x * 100).toFixed(0)}% within 3× against ${(o.baseline.within_3x * 100).toFixed(0)}%; rank correlation ${o.model.spearman.toFixed(2)} against ${o.baseline.spearman.toFixed(2)}, about level, because TVL alone sets most of the order. Earlier model (least-squares line, mean category effect, k = ${A.ols_shrink_k}, growth and age at λ = ${C.ols.lam}): ${sc(C.ols)}. Robust: ${sc(C.robust)}. The board uses the smaller median miss. The band is the 25th to 75th percentile of the misses.</li>
     <li><b>Farm plans.</b> A template per category (lend, CDP, basis, DEX, perp, RWA, chain, prediction, vault, other) gives 4 or 5 steps on the protocol's first-listed chain. Gas per transaction: ${gas}; bridge or withdrawal fee ${money(A.bridge_fee)}; DEX entry 0.15%, basis mint 0.10%, perp volume 0.90% and prediction spread 0.20% of the deposit.</li>
     <li><b>Payout.</b> Implied value × ${A.airdrop_share * 100}% to depositors × deposit ÷ (TVL + deposit) − costs, over ${M.WEEKS} weeks, if a token launches. The product's own yield is left out and pays on top. Break-even odds = costs ÷ payout. Farm: ≥ $${A.farm_net_hr} per hands-on hour and odds ≤ ${A.farm_odds * 100}%; Marginal: ≥ $${A.marginal_net_hr} and ≤ ${A.marginal_odds * 100}%; else Skip.</li>
     <li><b>Budget planner.</b> The same econ() at your capital; greedy chunks of capital ÷ ${A.chunks}, at most ${A.max_picks} protocols and ${A.max_share * 100}% of capital in any one, within your weekly hours.</li></ol>
     <p class="muted">Implied values are this radar's claim from the snapshot's figures, not a forecast that a token will launch. Not advice.</p></div>`;
   }
 
-  /* ---------- routing ---------- */
+  // routing
   function route() {
     const h = location.hash.replace(/^#\/?/, ''), [v, slug] = h.split('/');
     const r = v === 'p' && bySlug.get(decodeURIComponent(slug || ''));

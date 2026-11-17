@@ -1,25 +1,24 @@
-/* Token launch radar: the one model. main.ts runs this file to write board.json; the page runs the
-   same file on the same snapshot rows, so the board you see and the board on disk are one computation.
-   No protocol name appears here: every number comes from the snapshot's TVL, 7-day change, listing
-   date, category and chains, and every coefficient is fitted on the protocols whose token trades. */
+/* Token launch radar: the one model. main.ts runs it to write board.json and the page runs it on the
+   same snapshot, so both boards are one computation. No protocol name appears here: every coefficient
+   is fitted on the snapshot's protocols whose token trades. */
 (function (root) {
   'use strict';
 
   // Every assumption the page states, in one place.
   const A = {
-    shrink_k: 5,            // category effect = sum of residuals / (n + k): empirical-Bayes shrinkage to 0
-    growth_clamp: 25,       // 7-day TVL change clamped to +-25 % before it enters the fit
-    age_cap_years: 6,       // days tracked capped at 6 years
-    ridge_grid: [0, 0.5, 1, 2, 4, 8], // ridge on the growth and age slopes; leave-one-out picks one
-    airdrop_share: 0.06,    // share of the implied value assumed to go to depositors
-    horizon_days: 91,       // a farm runs 13 weeks
-    default_capital: 5000,
-    default_hours: 3,
-    bridge_fee: 1,          // relayer or exchange-withdrawal fee to fund a wallet
-    farm_net_hr: 25, farm_odds: 0.25,         // Farm: >= $25 per hands-on hour and breaks even at <= 25 % launch odds
-    marginal_net_hr: 5, marginal_odds: 0.6,   // Marginal: >= $5 per hour and <= 60 % odds; else Skip
+    huber_c: 0.5, huber_iter: 60, // robust line: Huber threshold (log10 units), reweighting rounds
+    shrink_k: 20, ols_shrink_k: 5, // category shrinkage n / (n + k), robust and ols specs
+    growth_clamp: 25, // 7-day TVL change clamped to +-25 %
+    age_cap_years: 6, // days tracked capped at 6 years
+    ridge_grid: [0, 0.5, 1, 2, 4, 8, null], // growth and age ridge (null: left out); leave-one-out picks
+    airdrop_share: 0.06, // share of the implied value assumed to go to depositors
+    horizon_days: 91, // a farm runs 13 weeks
+    default_capital: 5000, default_hours: 3,
+    bridge_fee: 1, // relayer or exchange-withdrawal fee to fund a wallet
+    farm_net_hr: 25, farm_odds: 0.25, // Farm: >= $25 per hands-on hour and breaks even at <= 25 % launch odds
+    marginal_net_hr: 5, marginal_odds: 0.6, // Marginal: >= $5 per hour and <= 60 % odds; else Skip
     max_picks: 6, chunks: 50,
-    max_share: 0.3,         // planner: no protocol takes more than 30 % of the capital (a launch may never come)
+    max_share: 0.3, // planner: no protocol takes more than 30 % of the capital (a launch may never come)
   };
   // Gas per transaction in USD (a stated table; any chain not named costs 0.25).
   const GAS = { Ethereum: 6, Bitcoin: 3, Tron: 1.5, Binance: 0.15, Avalanche: 0.1, Polygon: 0.02, Solana: 0.01, Sui: 0.01, Aptos: 0.01, TON: 0.05, 'Hyperliquid L1': 0.05 };
@@ -46,27 +45,39 @@
     return Number.isFinite(d) ? Math.max(0, Math.floor(d)) : null;
   }
 
-  /* fit(cs): the four-part value model, fitted on traded tokens cs = [{x, y, g, age, cat}].
-     1 size curve   y = a + b*x by ordinary least squares (x = log10 TVL, y = log10 market cap)
-     2 category     mean residual per category, shrunk toward 0: sum / (n + k)
-     3 growth, age  least squares of what is left on centred 7-day growth and years tracked, with a
-                    ridge lam: each slope's own sum of squares is scaled by (1 + lam) */
-  function fit(cs, lam) {
-    const mx = mean(cs.map((c) => c.x)), my = mean(cs.map((c) => c.y));
-    let sxy = 0, sxx = 0;
-    for (const c of cs) { sxy += (c.x - mx) * (c.y - my); sxx += (c.x - mx) ** 2; }
-    const b = sxy / sxx, a = my - b * mx;
-    const r1 = cs.map((c) => c.y - a - b * c.x);
-    const cat = {};
-    cs.forEach((c, i) => { const e = (cat[c.cat] ??= { n: 0, sum: 0 }); e.n++; e.sum += r1[i]; });
-    for (const k in cat) { cat[k].raw = cat[k].sum / cat[k].n; cat[k].effect = cat[k].sum / (cat[k].n + A.shrink_k); }
-    const r2 = cs.map((c, i) => r1[i] - cat[c.cat].effect);
-    const gm = mean(cs.map((c) => c.g)), am = mean(cs.map((c) => c.age));
+  /* fit(cs, spec, lam): the value model, fitted on traded tokens cs = [{x, y, g, age, cat}].
+     1 size curve   y = a + b*x (x = log10 TVL, y = log10 market cap). Spec robust: Huber IRLS, weight 1
+                    within c of the line and c/|residual| beyond, huber_iter rounds. Spec ols: least squares.
+     2 category     each category's residuals, median (robust) or mean (ols), shrunk to 0 by n / (n + k)
+     3 growth, age  least squares of what is left on centred 7-day growth and years tracked, ridge lam:
+                    each slope's sum of squares scaled by (1 + lam); lam null leaves both out.
+     Leave-one-out decides the spec and lam that value the board. */
+  const SPECS = { robust: [A.huber_c, A.shrink_k, median], ols: [0, A.ols_shrink_k, mean] };
+  function line(cs, c) {
+    let a = 0, b = 0, w = cs.map(() => 1);
+    for (let it = 0; it <= (c ? A.huber_iter : 0); it++) {
+      let W = 0, mx = 0, my = 0, sxy = 0, sxx = 0;
+      cs.forEach((p, i) => { W += w[i]; mx += w[i] * p.x; my += w[i] * p.y; });
+      mx /= W; my /= W;
+      cs.forEach((p, i) => { sxy += w[i] * (p.x - mx) * (p.y - my); sxx += w[i] * (p.x - mx) ** 2; });
+      b = sxy / sxx; a = my - b * mx;
+      w = cs.map((p) => { const r = Math.abs(p.y - a - b * p.x); return r <= c ? 1 : c / r; });
+    }
+    return [a, b];
+  }
+  function fit(cs, spec, lam) {
+    const [c, k, centre] = SPECS[spec], [a, b] = line(cs, c);
+    const r1 = cs.map((p) => p.y - a - b * p.x);
+    const cat = {}, res = {};
+    cs.forEach((p, i) => (res[p.cat] ??= []).push(r1[i]));
+    for (const q in res) { const n = res[q].length, raw = centre(res[q]); cat[q] = { n, raw, effect: (raw * n) / (n + k) }; }
+    const r2 = cs.map((p, i) => r1[i] - cat[p.cat].effect);
+    const gm = mean(cs.map((p) => p.g)), am = mean(cs.map((p) => p.age));
     let s11 = 0, s22 = 0, s12 = 0, t1 = 0, t2 = 0;
-    cs.forEach((c, i) => { const u = c.g - gm, v = c.age - am; s11 += u * u; s22 += v * v; s12 += u * v; t1 += u * r2[i]; t2 += v * r2[i]; });
+    cs.forEach((p, i) => { const u = p.g - gm, v = p.age - am; s11 += u * u; s22 += v * v; s12 += u * v; t1 += u * r2[i]; t2 += v * r2[i]; });
     s11 *= 1 + lam; s22 *= 1 + lam;
-    const det = s11 * s22 - s12 * s12;
-    return { a, b, cat, gm, am, lam, g: (t1 * s22 - t2 * s12) / det, d: (t2 * s11 - t1 * s12) / det, n: cs.length };
+    const det = s11 * s22 - s12 * s12, on = lam !== null;
+    return { spec, k, a, b, cat, gm, am, lam, g: on ? (t1 * s22 - t2 * s12) / det : 0, d: on ? (t2 * s11 - t1 * s12) / det : 0, n: cs.length };
   }
   // The four factors (log10 terms) the model adds for one protocol.
   function terms(f, p) {
@@ -81,13 +92,13 @@
     rx.forEach((v, i) => { n += (v - mx) * (ry[i] - my); dx += (v - mx) ** 2; dy += (ry[i] - my) ** 2; });
     return n / Math.sqrt(dx * dy);
   }
-  /* Leave-one-out: refit without each traded token, predict it, and score the misses against a flat
-     baseline (each token valued at the median market-cap-to-TVL multiple of the others). */
-  function loo(cs, lam) {
+  /* Leave-one-out: refit without each traded token and predict it; the flat baseline values it at the
+     others' median market-cap-to-TVL multiple. */
+  function loo(cs, spec, lam) {
     const err = [], base = [], pred = [];
     cs.forEach((c, i) => {
       const rest = cs.filter((_, j) => j !== i);
-      const p = predict(fit(rest, lam), c);
+      const p = predict(fit(rest, spec, lam), c);
       const m = log10(median(rest.map((r) => 10 ** (r.y - r.x))));
       pred.push(p); err.push(c.y - p); base.push(c.y - (c.x + m));
     });
@@ -96,7 +107,7 @@
       within_3x: e.filter((v) => Math.abs(v) <= log10(3)).length / e.length,
       spearman: spearman(p, cs.map((c) => c.y)),
     });
-    return { lam, model: score(err, pred), baseline: score(base, cs.map((c, i) => c.y - base[i])), q25: quantile(err, 0.25), q75: quantile(err, 0.75), pred, err };
+    return { spec, lam, model: score(err, pred), baseline: score(base, cs.map((c, i) => c.y - base[i])), q25: quantile(err, 0.25), q75: quantile(err, 0.75), pred, err };
   }
 
   /* Farm plans: a kind per category, then 4 or 5 steps, each with gas (count x the chain's gas), a fee
@@ -121,10 +132,8 @@
     other: [['Deposit USDC into {N}\'s core product on {C} (approve, then deposit)', 2, 0, 15], null, ['Check the position and points once a week', 0, 0, 5]],
   };
   const WEEKS = Math.round(A.horizon_days / 7);
-  const usd = (v) => '$' + (v < 10 ? v.toFixed(2) : Math.round(v).toLocaleString('en-US'));
 
-  /* plan(p): the steps and their cost structure: fixed (gas, fees in dollars) and bps (fees per dollar
-     deposited). cost_usd of a step is filled in at a deposit by econ(). */
+  // plan(p): the steps and their costs, fixed (gas, dollar fees) and bps (fees per dollar deposited).
   function plan(p) {
     const C = p.chains[0] || 'Ethereum', gas = gasOf(C), kind = kindOf(p.category);
     const [core, extra, weekly] = TEMPLATES[kind];
@@ -157,9 +166,8 @@
       low: gross(r, D) * r.band_low / r.implied_value_usd - cost, high: gross(r, D) * r.band_high / r.implied_value_usd - cost };
   }
 
-  /* The budget planner: allocate the reader's capital in chunks. Each round adds the chunk with the best
-     net return per dollar; opening a protocol costs its fixed gas, so it opens with twice its break-even
-     deposit. A protocol stops getting money once its marginal return falls below the next one's. */
+  /* The budget planner: each round adds the chunk of capital with the best net return per dollar; a
+     protocol opens with twice its break-even deposit, as opening costs its fixed gas. */
   function planner(rows, capital, hoursWeek) {
     const chunk = Math.max(50, capital / A.chunks), held = new Map(), cap = capital * A.max_share;
     let left = capital, hours = 0;
@@ -201,10 +209,12 @@
     const medDays = median(traded.filter((c) => c.days !== null).map((c) => c.days));
     const years = (dd) => Math.min(dd ?? medDays, A.age_cap_years * 365) / 365;
     traded.forEach((c) => (c.age = years(c.days)));
-    // The ridge on growth and age is the one whose leave-one-out median miss is smallest.
-    const tries = A.ridge_grid.map((lam) => loo(traded, lam));
-    const oos = tries.reduce((p, q) => (q.model.median_miss < p.model.median_miss ? q : p));
-    const f = fit(traded, oos.lam);
+    // Every spec and ridge is tested leave-one-out; the smallest median miss values the board.
+    const tries = Object.keys(SPECS).flatMap((sp) => A.ridge_grid.map((lam) => loo(traded, sp, lam)));
+    const best = (ok) => tries.filter(ok).reduce((p, q) => (q.model.median_miss < p.model.median_miss ? q : p));
+    const oos = best(() => true), f = fit(traded, oos.spec, oos.lam);
+    // For the Method: earlier spec (ols with growth, age), robust spec, winner with and without growth, age.
+    const cmp = { robust: best((t) => t.spec === 'robust'), ols: best((t) => t.spec === 'ols' && t.lam !== null), on: best((t) => t.spec === oos.spec && t.lam !== null), off: best((t) => t.spec === oos.spec && t.lam === null) };
     const universe = s.protocols.filter((p) => watch.has(p.slug) || (noToken(p) && p.tvl_usd > 0 && !excludedWhy(p)));
     const rows = universe.map((p) => {
       const c = { ...feat(p) }; c.age = years(c.days);
@@ -228,10 +238,10 @@
     });
     const comparables = traded.map((c, i) => ({ slug: c.p.slug, name: c.p.name, category: c.p.category, chains: c.p.chains, tvl_usd: c.p.tvl_usd, mcap_usd: c.p.mcap_usd, change_7d: c.p.change_7d, fitted_usd: 10 ** predict(f, c), loo_usd: 10 ** oos.pred[i], miss: 10 ** Math.abs(oos.err[i]) }))
       .sort((p, q) => q.mcap_usd - p.mcap_usd);
-    return { as_of: s.as_of, source: s.source, floor_usd: s.floor_usd, assumptions: A, gas: GAS, fit: f, median_days: medDays, oos, ridge_tries: tries.map((t) => [t.lam, t.model.median_miss]), rows, comparables, watchlist_size: watch.size, protocols: s.protocols.length };
+    return { as_of: s.as_of, source: s.source, floor_usd: s.floor_usd, assumptions: A, gas: GAS, fit: f, median_days: medDays, oos, cmp: Object.fromEntries(Object.entries(cmp).map(([k, t]) => [k, { spec: t.spec, lam: t.lam, ...t.model }])), ridge_tries: tries.filter((t) => t.spec === oos.spec).map((t) => [t.lam, t.model.median_miss]), rows, comparables, watchlist_size: watch.size, protocols: s.protocols.length };
   }
 
-  const api = { A, GAS, gasOf, kindOf, excludedWhy, fit, terms, predict, loo, plan, econ, breakEven, planner, build, gross, usd, WEEKS };
+  const api = { A, GAS, EXCLUDED, noToken, gasOf, kindOf, excludedWhy, fit, terms, predict, loo, plan, econ, breakEven, planner, build, gross, WEEKS };
   if (typeof module === 'object' && module.exports) module.exports = api;
   root.RadarModel = api;
 })(typeof globalThis === 'object' ? globalThis : this);
